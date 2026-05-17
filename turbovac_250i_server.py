@@ -1,29 +1,20 @@
 """
 turbovac_250i_server.py
 =======================
-LabRAD server for the Leybold TurboVac 250i turbopump over RS-485.
+LabRAD server for the controlling only Leybold TurboVac 250i turbopump over RS-485.
 
 Wraps turbovac_250i.py and exposes all pump functions as LabRAD settings.
-Includes a monitor signal that fires telemetry at a configurable interval.
-
-Requirements
-------------
-    pip install pylabrad
 
 Setup
 -----
 1. Start the LabRAD manager.
 2. Run this server:
        python turbovac_250i_server.py
-3. On first run, registry keys are created automatically under:
-       ['', 'Servers', 'TurboVac250i']
-   Edit them in the LabRAD registry client to match your hardware,
-   then restart the server.
 
 Registry keys
 -------------
-    port        Serial port string  e.g. "COM6" or "/dev/ttyUSB0"
-    address     RS-485 device address (int, default 0)
+    port        Serial port string  e.g. "COM6"
+    address     RS-485 device address (int, default 0 — do not change)
     baud_rate   Baud rate (int, default 19200 — do not change)
 
 Setting numbers

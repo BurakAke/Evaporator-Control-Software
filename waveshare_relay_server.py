@@ -1,15 +1,13 @@
 """
 waveshare_relay_server.py
 =========================
-LabRAD server for the Waveshare Modbus RTU Relay (B) over RS-485.
+LabRAD server for controlling only Waveshare Modbus RTU Relay (B) over RS-485.
 
 Usage
 -----
     # Terminal 1 — start scalabrad manager
-    # Terminal 2 — start this server
-    python waveshare_relay_server.py
-    # Terminal 3 — run control script
-    python control.py
+    # Terminal 2 — start this server    python waveshare_relay_server.py
+    # Terminal 3 — run control script   python control.py
 
 Contact Burak Akel about any questions.
 """

@@ -7,7 +7,8 @@ Edit the configuration block below to match your hardware, then run:
 
     python pump_main.py
 
-This program should only be operated to change parameters such as speed, addresses and such.
+This program should only be operated to change parameters such as speed 
+or comm parameters on device side.
 To start and stop the pump use the labrad servers.
 
 Contact Burak Akel about any questions.
@@ -24,16 +25,16 @@ from turbovac_250i import TurboVac250i, print_status, make_csv_callback
 # ---------------------------------------------------------------------------
 
 # TurboVac 250i
-PUMP_PORT        = "/dev/ttyUSB0"   # serial port e.g. "COM3" on Windows
-PUMP_ADDRESS     = 0                # RS-485 device address (0-31, factory default 0)
-PUMP_BAUD_RATE   = 19200            # fixed by firmware — only change if Leybold says so
-PUMP_RETRIES     = 3                # telegram retry attempts on failure
-PUMP_RETRY_DELAY = 0.1              # seconds between retries
+PUMP_PORT        = "COM6"   # serial port e.g. "COM3" on Windows
+PUMP_ADDRESS     = 0        # RS-485 device address (0-31, factory default 0)
+PUMP_BAUD_RATE   = 19200    # fixed by firmware — only change if Leybold says so
+PUMP_RETRIES     = 3        # telegram retry attempts on failure
+PUMP_RETRY_DELAY = 0.1      # seconds between retries
 
 # Monitoring
-MONITOR_INTERVAL = 1.0              # seconds between telemetry polls
-MONITOR_COUNT    = 30               # number of samples (-1 = run until Ctrl-C)
-MONITOR_CSV      = None             # set to a file path e.g. "pump_log.csv" to enable
+MONITOR_INTERVAL = 1.0      # seconds between telemetry polls
+MONITOR_COUNT    = 30       # number of samples (-1 = run until Ctrl-C)
+MONITOR_CSV      = None     # set to a file path e.g. "pump_log.csv" to enable
 
 # Feature flags — set to False to skip that section
 ENABLE_PUMP      = True
@@ -50,7 +51,6 @@ logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -71,6 +71,8 @@ if __name__ == "__main__":
         pump.connect()
 
         print_status(pump)
+
+        pump.set_speed(1000)
 
         # pump.start()
 

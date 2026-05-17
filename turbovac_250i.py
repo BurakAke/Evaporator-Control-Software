@@ -4,11 +4,17 @@ turbovac_250i.py
 Python wrapper for the Leybold TurboVac 250i (and all TURBOVAC i/iX series)
 over RS-485 using the Siemens USS protocol (VDI/VDE 3689).
 
-Main control software and comm setup parameters are given in main.py.
-Contact Burak Akel about any questions.
+Main control software and comm setup parameters are given in the main files.
 
+Comments are added next to common error messages to make debugging errors easier.
+These could be changed or removed as wanted.
+
+Contact Burak Akel about any questions.
+"""
+
+"""
 ------------------------------------------------------------------------------
-SOURCE DOCUMENT
+SOURCE DOCUMENT (should double check with the datasheet if in doubt)
 ------------------------------------------------------------------------------
 All protocol details, telegram layout, control/status bit definitions, AK
 designators, and parameter numbers in this file are taken directly from:
@@ -35,11 +41,11 @@ HARDWARE WIRING  (Sec. 1.1, connector X104 on TURBOVAC-i basic model)
     Pin 8  ->  TxD/RxD-  (B line)
     Pin 5  ->  GND
     Housing -> Cable shield
-    Place a 120 ohm termination resistor at both ends of the bus.
+    Termination resistor is not necessary until 50m.
 
 RS-485 settings (all fixed by firmware, Sec. 1.1 Technical Data table)
 ------------------------------------------------------------------------
-    Baud rate  : 19200  (fixed)
+    Baud rate  : 19200
     Data bits  : 8
     Stop bits  : 1
     Parity     : Even
@@ -142,11 +148,17 @@ KEY PARAMETER NUMBERS (Sec. 5 Parameter List)
     P5   Motor current x 0.1      [A]              (r)
     P8   Save parameters to EEPROM (write 1)       (w) ~30 s, no power cut
     P11  Freq-converter temperature [deg C]        (r)
+    P17  Max permissible motor current [0.1 A]     (r)  read only, factory set
+    P18  Highest permissible frequency [Hz]        (r)  read only, factory set
+                                                        upper bound for P247/P248
+    P19  Lowest permissible frequency [Hz]         (r)  read only, factory set
     P37  RS-485 device address (0-31)              (r/w)
     P125 Bearing temperature  [deg C]              (r)
     P227 Active warning code                       (r)
     P302 Total operating hours                     (r)  32-bit
     P303 Most recent error code                    (r)  32-bit
+
+    Speed setpoint: sent via HSW field (PZD2) with STW bit 6 set.
 """
 
 from __future__ import annotations
@@ -159,7 +171,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-import serial  # pip install pyserial
+import serial
 
 log = logging.getLogger(__name__)
 
@@ -322,7 +334,7 @@ class PumpTelemetry:
 # ---------------------------------------------------------------------------
 
 def _xor_checksum(data: bytes) -> int:
-    """BCC checksum: XOR of all bytes. (Sec. 3.1, p. 22)"""
+    """BCC checksum: XOR of all bytes. (Sec. 3.1, p. 22) Checks if data transmission is corrupted."""
     result = 0
     for b in data:
         result ^= b
@@ -383,7 +395,7 @@ def _parse_response(data: bytes) -> tuple[int, int, int, int, int, PumpTelemetry
     bcc_expected = _xor_checksum(data[:23])
     if data[23] != bcc_expected:
         raise ValueError(
-            f"USS BCC mismatch: received 0x{data[23]:02X}, "
+            f"USS BCC mismatch: received 0x{data[23]:02X}, " #transmission corrupted. reconnect and check wiring.
             f"expected 0x{bcc_expected:02X}"
         )
 
@@ -415,59 +427,80 @@ class TurboVac250i:
 
     Parameters
     ----------
-    port        : Serial port, e.g. ``"COM6"`` or ``"/dev/ttyUSB0"``.
-    address     : RS-485 device address (0-31). Factory default is ``0``.
+    port        : Serial port string — used only when bus is None.
+    address     : RS-485 device address (0-31). Factory default is 0.
     baud_rate   : Serial baud rate. Fixed at 19200 by firmware.
     retries     : Telegram retry attempts before raising an exception.
     retry_delay : Seconds to wait between retries.
+    bus         : Optional SharedBus instance. When provided the pump uses
+                  the shared serial port and lock instead of opening its own.
+                  Pass this when sharing a COM port with other devices.
     """
 
     def __init__(
         self,
-        port:        str,
+        port:        str   = "",
         address:     int   = 0,
         baud_rate:   int   = 19200,
         retries:     int   = 3,
         retry_delay: float = 0.1,
+        bus                = None,
     ):
         self.port        = port
         self.address     = address
         self.baud_rate   = baud_rate
         self.retries     = retries
         self.retry_delay = retry_delay
+        self._bus        = bus               # SharedBus or None
         self._ser: Optional[serial.Serial] = None
-        self._cw  = _CW_ENABLE   # shadow register for current control word
-        self._hsw = 0             # shadow register for speed setpoint (HSW, PZD2)
+        self._cw  = _CW_ENABLE
+        self._hsw = 0
 
     # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
 
     def connect(self) -> "TurboVac250i":
-        """Open the RS-485 port. Returns ``self`` for chaining."""
-        self._ser = serial.Serial(
-            port     = self.port,
-            baudrate = self.baud_rate,
-            bytesize = _BYTESIZE,
-            parity   = _PARITY,
-            stopbits = _STOPBITS,
-            timeout  = _RESPONSE_TIMEOUT_S,
-        )
-        log.info(
-            "TurboVac250i connected: port=%s address=%d baud=%d parity=Even",
-            self.port, self.address, self.baud_rate,
-        )
+        """
+        Open the RS-485 port.
+        If a SharedBus was provided at construction the port is already
+        open — this just logs and returns.
+        """
+        if self._bus is not None:
+            log.info(
+                "TurboVac250i using shared bus: address=%d", self.address
+            )
+        else:
+            self._ser = serial.Serial(
+                port     = self.port,
+                baudrate = self.baud_rate,
+                bytesize = _BYTESIZE,
+                parity   = _PARITY,
+                stopbits = _STOPBITS,
+                timeout  = _RESPONSE_TIMEOUT_S,
+            )
+            log.info(
+                "TurboVac250i connected: port=%s address=%d baud=%d parity=Even",
+                self.port, self.address, self.baud_rate,
+            )
         return self
 
     def disconnect(self):
-        """Close the RS-485 port."""
-        if self._ser and self._ser.is_open:
+        """
+        Close the RS-485 port.
+        If using a SharedBus the port is left open (bus owns its lifecycle).
+        """
+        if self._bus is not None:
+            log.info("TurboVac250i released from shared bus.")
+        elif self._ser and self._ser.is_open:
             self._ser.close()
             log.info("TurboVac250i disconnected: port=%s", self.port)
         self._ser = None
 
     @property
     def is_connected(self) -> bool:
+        if self._bus is not None:
+            return self._bus.is_open
         return self._ser is not None and self._ser.is_open
 
     # ------------------------------------------------------------------
@@ -504,11 +537,19 @@ class TurboVac250i:
 
         for attempt in range(1, self.retries + 1):
             try:
-                self._ser.reset_input_buffer()
-                self._ser.write(frame)
-                time.sleep(_RESPONSE_DELAY_S)
+                # Use shared bus if available, else own serial port
+                if self._bus is not None:
+                    raw = self._bus.transact(
+                        frame, 24,
+                        pre_delay  = 0.0,
+                        post_delay = _RESPONSE_DELAY_S,
+                    )
+                else:
+                    self._ser.reset_input_buffer()
+                    self._ser.write(frame)
+                    time.sleep(_RESPONSE_DELAY_S)
+                    raw = self._ser.read(24)
 
-                raw = self._ser.read(24)
                 log.debug("RX [%d bytes]: %s", len(raw), raw.hex(" ") if raw else "(empty)")
 
                 if len(raw) != 24:
@@ -522,17 +563,17 @@ class TurboVac250i:
                 if resp_ak == _AK_ERROR:
                     raise RuntimeError(
                         f"Pump refused task for PNU={pnu} (error code: {resp_pwe})"
-                    )
+                    )   # If you get this error pump is receiving an invalid code. trace that code and remove it.
                 if resp_ak == _AK_NO_WRITE:
                     raise RuntimeError(
                         f"Pump denied write access for PNU={pnu}"
-                    )
+                    )   # Might be calling a read only register. check the code.
 
                 return resp_pwe, telemetry
 
             except (serial.SerialException, TimeoutError, ValueError, RuntimeError) as exc:
                 last_exc = exc
-                log.warning("Attempt %d/%d failed: %s", attempt, self.retries, exc)
+                log.warning("Attempt %d/%d failed: %s", attempt, self.retries, exc) # Make sure port and labrad are connected right.
                 if attempt < self.retries:
                     time.sleep(self.retry_delay)
 
@@ -636,6 +677,8 @@ class TurboVac250i:
     def reset_error(self):
         """
         Reset the error latch (STW bit 7 + bit 10).
+        Should be used if the pump had the red light on. Probably there was an error 
+        that was not safe for operation so pump must be stopped and reset to use safely again.
 
         Per Sec. 4.3: reset is only possible when bit 0 = 0 (pump stopped).
         Automatically returns control word to stopped state after reset pulse.
@@ -652,45 +695,40 @@ class TurboVac250i:
 
     def set_speed(self, hz: int):
         """
-        Set the target rotor speed in Hz.
+        Set the target rotor speed in Hz by updating the HSW field in PZD2.
 
-        This writes the value to P18 (nominal speed setpoint) via the
-        parameter channel, then updates the live HSW setpoint field in
-        PZD2 so the running pump responds immediately if already started.
+        Per Leybold manual 300450826_002_C2 Sec. 4.3, when STW bit 6
+        (Enable main setpoint) is set, the HSW value in PZD2 is the live
+        speed setpoint. This is the correct way to command speed over RS-485.
 
-        The value is clamped to the range [0, P17_max] where P17 is the
-        firmware maximum frequency. For the TurboVac 250i the factory
-        maximum is typically 1500 Hz; the nominal default shipped is
-        1000 Hz. Confirm with read_param(17) before raising above 1000.
+        The pump will not exceed its factory maximum frequency regardless
+        of what HSW value is sent — the firmware clamps it internally.
+        Nominal factory default for the 250i is 1000 Hz.
 
         Parameters
         ----------
-        hz : Target speed in Hz (integer). Use get_max_speed() to check
-             the firmware ceiling before setting above 1000.
+        hz : Target speed in Hz. Must be >= 0.
         """
         if hz < 0:
             raise ValueError(f"Speed must be >= 0 Hz, got {hz}")
-        self.write_param(18, hz)
-        # Also push the live setpoint into HSW (PZD2) so a running pump
-        # responds without needing a stop/start cycle.
         self._hsw = hz & 0xFFFF
-        log.info("Speed setpoint written to P18: %d Hz", hz)
+        log.info("Speed setpoint (HSW/PZD2) updated to %d Hz", hz)
 
-    def get_speed_setpoint(self) -> int:
+    def get_max_frequency(self) -> int:
         """
-        Read the current speed setpoint from P18 in Hz.
+        Read the factory-set maximum frequency limit from P18 [Hz].
 
-        This is the *target*, not the actual rotor speed.
-        Use get_rotor_speed() for the live reading from PZD2.
+        P18 = Highest permissible frequency. Read only, factory set.
+        The pump will never exceed this value regardless of HSW.
         """
         return self.read_param(18)
 
-    def get_max_speed(self) -> int:
+    def get_max_motor_current(self) -> int:
         """
-        Read the firmware maximum frequency limit from P17 in Hz.
+        Read the maximum permissible motor current from P17 [0.1 A].
 
-        The pump will never exceed this value regardless of what is
-        written to P18. Confirm this before commanding above 1000 Hz.
+        P17 = Maximum permissible motor current. Read only.
+        Divide by 10 to get Amperes.
         """
         return self.read_param(17)
 
@@ -731,7 +769,7 @@ class TurboVac250i:
         return self.read_param(227)
 
     def get_operating_hours(self) -> int:
-        """Total operating hours (P302)."""
+        """Total operating hours (P302). Need to monitor for maintanance."""
         return self.read_param(302)
 
     def get_rs485_address(self) -> int:
@@ -748,6 +786,8 @@ class TurboVac250i:
 
         Must be followed by save_parameters() and a power-cycle to take effect.
         Pump must be at standstill before saving.
+
+        Shouldn't be used unless ABSOLUTELY necessary.
         """
         if not 0 <= new_address <= 31:
             raise ValueError(f"RS-485 address must be 0-31, got {new_address}")
@@ -766,7 +806,7 @@ class TurboVac250i:
         log.info("Save command sent. Wait 30 s before cycling power.")
 
     # ------------------------------------------------------------------
-    # Live monitoring
+    # Live monitoring (Helpful for debug and setup)
     # ------------------------------------------------------------------
 
     def monitor(

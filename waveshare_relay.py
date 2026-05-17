@@ -1,10 +1,9 @@
 """
 waveshare_relay.py
 ==================
-Python wrapper for the Waveshare Modbus RTU Relay (B) over RS485.
+Driver for the Waveshare Modbus RTU Relay (B) over RS485.
 
-Comm setup parameters should be set in the server file.
-
+Main Control software and comm setup parameters are given in the bus_server file.
 Contact Burak Akel about any questions.
 """
 
@@ -12,6 +11,7 @@ import time
 import math
 import struct
 import serial
+from typing import Optional
 
 # data check needed for the modbus protocol that the relay uses.
 def _crc16(data: bytes) -> bytes:
@@ -24,40 +24,64 @@ def _crc16(data: bytes) -> bytes:
             else:
                 crc >>= 1
     return struct.pack("<H", crc)
-    #converts crc into packs of two bytes using little endian encoding
 
 
 class RelayModule:
 
-    def __init__(self, port: str, slave_id: int = 1, num_relays: int = 8, baud_rate: int = 19200):
+    def __init__(
+        self,
+        port:       str = "",
+        slave_id:   int = 1,
+        num_relays: int = 8,
+        baud_rate:  int = 19200,
+        bus             = None,
+    ):
+        self.port       = port
         self.port       = port
         self.slave_id   = slave_id
+        self.slave_id   = slave_id
+        self.num_relays = num_relays
         self.num_relays = num_relays
         self.baud_rate  = baud_rate
+        self.baud_rate  = baud_rate
+        self._bus       = bus
+        self._frame_gap = (3.5 * 11) / baud_rate
         self._frame_gap = (3.5 * 11) / baud_rate
         self._serial    = None
+        self._serial: Optional[serial.Serial] = None
 
     # -- Connection ------------------------------------------------------------
 
     def connect(self) -> None:
-        self._serial = serial.Serial(
-            port=self.port,
-            baudrate=self.baud_rate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=1,
-            write_timeout=1,
-        )
-        self._serial.reset_input_buffer()
-        self._serial.reset_output_buffer()
-        print(f"[OK] Connected on {self.port} (slave ID={self.slave_id}, baud={self.baud_rate})")
+        if self._bus is not None:
+            print(f"[OK] Relay using shared bus (slave_id={self.slave_id})")
+        else:
+            self._serial = serial.Serial(
+                port=self.port,
+                baudrate=self.baud_rate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_EVEN,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=1,
+                write_timeout=1,
+            )
+            self._serial.reset_input_buffer()
+            self._serial.reset_output_buffer()
+            print(f"[OK] Connected on {self.port}" f"(slave ID={self.slave_id}, baud={self.baud_rate})")
 
     def disconnect(self) -> None:
-        if self._serial and self._serial.is_open:
+        """
+        Close the serial port. If using a SharedBus the port is left open.
+        """
+        if self._bus is not None:
+            print("[OK] Relay released from shared bus.")
+        elif self._serial and self._serial.is_open:
+            self._serial.close()
             self._serial.close()
             self._serial = None
+            self._serial = None
             print("[OK] Disconnected.")
+            print("[OK] Relay disconnected.")
 
     # -- Relay control ---------------------------------------------------------
 
@@ -96,8 +120,9 @@ class RelayModule:
     def status(self, relay_num: int):
         """Read and print current relay states. Returns list of bools (index 0 = relay 1)."""
         states = self._read_coils(0, self.num_relays)
-        print(f"  Relay {relay_num}: {'ON' if states[relay_num-1] else 'OFF'}")
-        return states[relay_num-1]
+        state = states[relay_num - 1] if states else None
+        print(f"  Relay {relay_num}: {'ON' if state else 'OFF'}")
+        return state
     
     def all_status(self) -> list:
         """Read and print current relay states. Returns list of bools (index 0 = relay 1)."""
@@ -127,6 +152,7 @@ class RelayModule:
 
     def _write_coil(self, address: int, state: bool) -> None:
         payload = struct.pack(">BBHH", self.slave_id, 0x05, address, 0xFF00 if state else 0x0000)
+        # builds the "message" for the module. Puts id,write/read,coil #,on/off state into register.
         self._send(payload, response_length=8)
 
     def _write_multiple_coils(self, states: list) -> None:
@@ -137,7 +163,6 @@ class RelayModule:
             if s:
                 coil_bytes[i // 8] |= (1 << (i % 8))
         payload = struct.pack(">BBHHB", self.slave_id, 0x0F, 0, count, byte_count) + bytes(coil_bytes)
-        # builds the "message" for the module. Puts id,write/read,coil #,on/off state into register.
         self._send(payload, response_length=8)
 
     def _read_coils(self, start: int, count: int) -> list:
@@ -150,29 +175,36 @@ class RelayModule:
 
     # -- Serial ----------------------------------------------------------------
 
-    def _send(self, payload: bytes, response_length: int) -> bytes | None:
-        if not self._serial or not self._serial.is_open:
-            raise RuntimeError("Not connected. Call connect() first.")
-        
-        # frame the relay input and send it
+    def _send(self, payload: bytes, response_length: int) -> Optional[bytes]:
         frame = payload + _crc16(payload)
-        time.sleep(self._frame_gap)
-        self._serial.reset_input_buffer()
-        self._serial.write(frame)
-        self._serial.flush()
+        # frame the relay input and send it
 
-        # read relay's response throw error if response is not complete.
-        response = self._serial.read(response_length)
+        if self._bus is not None:
+            # Shared bus path — lock is held inside transact()
+            response = self._bus.transact(
+                frame, response_length,
+                pre_delay  = self._frame_gap,
+                post_delay = 0.0,
+            )
+        else:
+            # Standalone path — own serial port
+            if not self._serial or not self._serial.is_open:
+                raise RuntimeError("Not connected. Call connect() first.")
+            time.sleep(self._frame_gap)
+            self._serial.reset_input_buffer()
+            self._serial.write(frame)
+            self._serial.flush()
+            # read relay's response throw error if response is not complete.
+            response = self._serial.read(response_length)
+            
         if len(response) < response_length:
             print(f"[ERROR] Expected {response_length} bytes, got {len(response)}.")
             return None
-
         # decode relay's response throw error if response is corrupted during transmit.
         body, recv_crc = response[:-2], response[-2:]
         if _crc16(body) != recv_crc:
             print(f"[ERROR] CRC mismatch: {response.hex(' ').upper()}")
             return None
-
         return response
 
     def _validate(self, relay_num: int) -> None:
