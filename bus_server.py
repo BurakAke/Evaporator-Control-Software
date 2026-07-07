@@ -7,11 +7,12 @@ Waveshare relay module through one shared RS-485 bus on a single COM port.
 Bus server manages the port so that each device can use the port when necessary.
 The COM port is initialized in the shared bus file.
 
+Current code has the pump control through relay so ignore the pump commands.
+
 Usage
 -----
     # Terminal 1 — scalabrad manager
     # Terminal 2 — python bus_server.py
-    # Terminal 3 — python control.py
 
 Contact Burak Akel about any questions.
 """
@@ -19,7 +20,6 @@ Contact Burak Akel about any questions.
 from labrad.server import LabradServer, setting
 
 from shared_bus      import SharedBus
-from turbovac_250i   import TurboVac250i
 from waveshare_relay import RelayModule
 
 
@@ -30,12 +30,10 @@ from waveshare_relay import RelayModule
 PORT      = "COM6"
 BAUD_RATE = 19200
 
-PUMP_ADDRESS     = 0
-PUMP_RETRIES     = 3
-PUMP_RETRY_DELAY = 0.1
-
 RELAY_SLAVE_ID  = 1
 RELAY_NUM       = 8
+GATE_VALVE      = 7
+TURBO_RELAY      = 7
 
 
 class BusServer(LabradServer):
@@ -49,13 +47,6 @@ class BusServer(LabradServer):
         # Open the shared bus once — both devices use this single connection
         self.bus = SharedBus(port=PORT, baud_rate=BAUD_RATE)
 
-        # Create device wrappers with the shared bus
-        self.pump = TurboVac250i(
-            address     = PUMP_ADDRESS,
-            retries     = PUMP_RETRIES,
-            retry_delay = PUMP_RETRY_DELAY,
-            bus         = self.bus,
-        )
         self.relay = RelayModule(
             slave_id   = RELAY_SLAVE_ID,
             num_relays = RELAY_NUM,
@@ -67,57 +58,13 @@ class BusServer(LabradServer):
         self.relay.connect()
 
         print(f"Shared RS-485 bus open on {PORT}")
-        print(f"  Pump  : address={PUMP_ADDRESS}")
         print(f"  Relay : slave_id={RELAY_SLAVE_ID}, {RELAY_NUM} channels")
 
     def stopServer(self):
-        self.pump.disconnect()
         self.relay.disconnect()
         self.bus.close()
         print("Shared bus closed.")
 
-    # ------------------------------------------------------------------
-    # Pump settings
-    # ------------------------------------------------------------------
-
-    @setting(1, "pump_start", returns="s")
-    def pump_start(self, c):
-        """Start the pump rotor via fieldbus."""
-        self.pump.start()
-        return "Pump start command sent."
-
-    @setting(2, "pump_stop", returns="s")
-    def pump_stop(self, c):
-        """Coast stop — pump decelerates to standstill."""
-        self.pump.stop()
-        return "Pump stop command sent."
-
-    @setting(3, "pump_reset", returns="s")
-    def pump_reset(self, c):
-        """Reset the error latch. Pump must be stopped first."""
-        self.pump.reset_error()
-        return "Pump error reset sent."
-
-    @setting(4, "pump_telemetry", returns="s")
-    def pump_telemetry(self, c):
-        """
-        Full telemetry snapshot.
-
-        Returns a comma-separated string:
-            "speed_hz,current_a,temp_conv_c,temp_bear_c,dc_voltage_v,status_word"
-
-        Parse in the client with:
-            speed, current, t_conv, t_bear, vdc, zsw = parse_telemetry(dev.pump_telemetry())
-        """
-        t = self.pump.poll()
-        return (
-            f"{t.rotor_speed_hz:.3f},"
-            f"{t.current_a:.3f},"
-            f"{t.temperature_c:.3f},"
-            f"{t.bearing_temp_c:.3f},"
-            f"{t.dc_voltage_v:.3f},"
-            f"{t.status_word}"
-        )
 
     # ------------------------------------------------------------------
     # Relay settings
@@ -176,7 +123,50 @@ class BusServer(LabradServer):
         """Cycle all relays ON then OFF to verify wiring."""
         self.relay.demo()
         return "Demo complete."
+    
+    # ------------------------------------------------------------------
+    # Gate Valve Functions
+    # ------------------------------------------------------------------
 
+    @setting(20, "gate_valve_on", returns="s")
+    def gate_valve_on(self, c):
+        """Turn gate valve ON."""
+        self.relay.on(GATE_VALVE)
+        return f"Gate Valve -> ON"
+
+    @setting(21, "gate_valve_off", returns="s")    
+    def gate_valve_off(self, c):
+        """Turn gate valve OFF."""
+        self.relay.off(GATE_VALVE)
+        return f"Gate Valve -> OFF"
+
+    @setting(22, "gate_valve_status", returns="s")
+    def gate_valve_status(self, c):
+        """Get state of gate valve. Returns 'ON' or 'OFF'."""
+        states = self.relay._read_coils(0, self.relay.num_relays)
+        return "ON" if (states and states[GATE_VALVE - 1]) else "OFF"
+    
+    # ------------------------------------------------------------------
+    # Turbo Pump Functions
+    # ------------------------------------------------------------------
+
+    @setting(30, "turbo_on", returns="s")
+    def turbo_on(self, c):
+        """Turn turbo pump ON."""
+        self.relay.on(TURBO_RELAY)
+        return f"Gate Valve -> ON"
+
+    @setting(31, "turbo_off", returns="s")    
+    def turbo_off(self, c):
+        """Turn turbo pump OFF."""
+        self.relay.off(TURBO_RELAY)
+        return f"Gate Valve -> OFF"
+
+    @setting(32, "turbo_status", returns="s")
+    def turbo_status(self, c):
+        """Get state of the turbo pump relay. Returns 'ON' or 'OFF'."""
+        states = self.relay._read_coils(0, self.relay.num_relays)
+        return "ON" if (states and states[TURBO_RELAY - 1]) else "OFF"
 
 if __name__ == "__main__":
     from labrad import util
